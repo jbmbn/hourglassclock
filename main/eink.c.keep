@@ -1,0 +1,421 @@
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "driver/spi_master.h"
+#include "esp_log.h"
+#include "driver/gpio.h"
+#include "bitmaps.h"
+
+#ifdef CONFIG_IDF_TARGET_ESP32
+#define EPD_HOST    HSPI_HOST
+#define DMA_CHAN    2
+
+#elif defined CONFIG_IDF_TARGET_ESP32S2
+#define EPD_HOST    SPI2_HOST
+#define DMA_CHAN    EPD_HOST
+#endif
+
+#define EINK_SPI_CS   26
+#define EINK_DC        5
+#define EINK_RST      27
+#define EINK_BUSY      4
+#define EINK_SPI_MOSI 12
+#define EINK_SPI_CLK  25
+
+#define SPI_FREQUENCY 4000000
+
+#define EINK_RESET_DELAY 100
+
+static spi_device_handle_t spi;
+
+static const char* TAG = "Epd driver";
+
+//Wave from for partial update for Heltec 1.54 200x200 pixels
+static const unsigned char WF_PARTIAL[159] = {
+0x0,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x80,0x80,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x40,0x40,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x80,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x6,0x0,0x0,0x0,0x0,0x0,0x1,
+0x1,0x1,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x0,0x0,0x0,0x0,0x0,0x0,0x0,
+0x22,0x22,0x22,0x22,0x22,0x22,0x0,0x0,0x0,
+0x02,0x17,0x41,0xB0,0x32,0x28
+};	
+
+static const unsigned char WF_PARTIAL_MODE[10] = {
+    0x00,0x00,0x00,0x00,0x00,
+    0x40,0x00,0x00,0x00,0x00
+};
+
+static void eink_init_io(void) {
+    printf("MOSI: %d CLK: %d\nSPI_CS: %d DC: %d RST: %d BUSY: %d\n\n",
+        EINK_SPI_MOSI, EINK_SPI_CLK, EINK_SPI_CS,EINK_DC,EINK_RST,EINK_BUSY);
+    //Initialize GPIOs direction & initial states
+    gpio_set_direction((gpio_num_t)EINK_SPI_CS, GPIO_MODE_OUTPUT);
+    gpio_set_direction((gpio_num_t)EINK_DC, GPIO_MODE_OUTPUT);
+    gpio_set_direction((gpio_num_t)EINK_RST, GPIO_MODE_OUTPUT);
+    gpio_set_direction((gpio_num_t)EINK_BUSY, GPIO_MODE_INPUT);
+    gpio_set_pull_mode((gpio_num_t)EINK_BUSY, GPIO_PULLUP_ONLY);
+
+    gpio_set_level((gpio_num_t)EINK_SPI_CS, 1);
+    gpio_set_level((gpio_num_t)EINK_DC, 1);
+    gpio_set_level((gpio_num_t)EINK_RST, 1);
+    
+    esp_err_t ret;
+    // MISO not used, only Master to Slave
+    spi_bus_config_t buscfg={
+        .mosi_io_num=EINK_SPI_MOSI,
+        .miso_io_num = -1,
+        .sclk_io_num=EINK_SPI_CLK,
+        .quadwp_io_num=-1,
+        .quadhd_io_num=-1,
+        .max_transfer_sz=4094
+    };
+    //Config Frequency and SS GPIO
+    spi_device_interface_config_t devcfg={
+        .mode=0,  //SPI mode 0
+        .clock_speed_hz=SPI_FREQUENCY,
+        .input_delay_ns=0,
+        .spics_io_num=EINK_SPI_CS,
+        .flags = (SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_3WIRE),
+        .queue_size=5
+    };
+    // DISABLED Callbacks pre_cb/post_cb. SPI does not seem to behave the same
+    // CS / DC GPIO states the usual way
+
+    //Initialize the SPI bus
+    ret=spi_bus_initialize(EPD_HOST, &buscfg, DMA_CHAN);
+    ESP_ERROR_CHECK(ret);
+
+    //Attach the EPD to the SPI bus
+    ret=spi_bus_add_device(EPD_HOST, &devcfg, &spi);
+    ESP_ERROR_CHECK(ret);
+    
+    printf("EpdSpi::init() Debug enabled. SPI master at frequency:%d  MOSI:%d CLK:%d CS:%d DC:%d RST:%d BUSY:%d\n",
+      SPI_FREQUENCY, EINK_SPI_MOSI, EINK_SPI_CLK, EINK_SPI_CS,
+      EINK_DC,EINK_RST,EINK_BUSY);
+}
+
+void eink_shutdown_io(void)
+{
+    ESP_ERROR_CHECK(spi_bus_remove_device(spi));
+    ESP_ERROR_CHECK(spi_bus_free(EPD_HOST));
+    //TODO: reset gpio 
+}
+
+static void eink_cmd(const uint8_t cmd)
+{
+    printf("C %x\n",cmd);
+
+    esp_err_t ret;
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length=8;                     //Command is 8 bits
+    t.tx_buffer=&cmd;               //The data is the cmd itself 
+    // No need to toogle CS when spics_io_num is defined in SPI config struct
+    //gpio_set_level((gpio_num_t)EINK_SPI_CS, 0);
+    gpio_set_level((gpio_num_t)EINK_DC, 0);
+    ret=spi_device_polling_transmit(spi, &t);
+
+    assert(ret==ESP_OK);
+    gpio_set_level((gpio_num_t)EINK_DC, 1);
+}
+
+static void eink_data(uint8_t data)
+{
+    //printf("D %x\n",data);
+    esp_err_t ret;
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length=8;                     //Data is 8 bits
+    t.tx_buffer=&data;              //Use the data itself
+    ret=spi_device_polling_transmit(spi, &t);
+    
+    assert(ret==ESP_OK);
+}
+
+#if 1
+static void eink_dataBuffer(const uint8_t *data, int len)
+{
+    if (len==0) return; 
+#if 0
+    esp_err_t ret;
+    spi_transaction_t t;
+                
+    memset(&t, 0, sizeof(t));       //Zero out the transaction
+    t.length=len*8;                 //Len is in bytes, transaction length is in bits.
+    t.tx_buffer=data;               //Data
+    ret=spi_device_polling_transmit(spi, &t);  //Transmit!
+    assert(ret==ESP_OK);            //Should have had no issues.
+#endif
+
+    for(int i=0; i<len; i++) {
+        eink_data(data[i]);
+    }
+}
+#endif
+
+static void eink_waitBusy(const char* message){
+  ESP_LOGI(TAG, "_waitBusy for %s", message);
+  int64_t time_since_boot = esp_timer_get_time();
+
+  //vTaskDelay(10 / portTICK_RATE_MS);
+  while (1){
+    // On low is not busy anymore
+    if (gpio_get_level((gpio_num_t)EINK_BUSY) == 0) break;
+    vTaskDelay(20 / portTICK_RATE_MS);
+    if (esp_timer_get_time()-time_since_boot>7000000)
+    {
+      ESP_LOGI(TAG, "Busy Timeout");
+      break;
+    }
+  }
+  //vTaskDelay(100 / portTICK_RATE_MS);
+
+}
+
+static void eink_init_partial(void) {
+    eink_cmd(0x32); //set LUT
+    eink_dataBuffer(WF_PARTIAL, 153);
+    eink_waitBusy("load LUT");
+    eink_cmd(0x3F); //gate voltage
+    eink_data(WF_PARTIAL[153]);
+    eink_cmd(0x03); //gate voltage
+    eink_data(WF_PARTIAL[154]);
+    eink_cmd(0x04); //source voltage
+    eink_data(WF_PARTIAL[155]);
+    eink_data(WF_PARTIAL[156]);
+    eink_data(WF_PARTIAL[157]);
+    eink_cmd(0x2C); //vcom
+    eink_data(WF_PARTIAL[158]);
+    eink_cmd(0x37); //active waveform
+    eink_dataBuffer(WF_PARTIAL_MODE, 10);
+    eink_cmd(0x3C); //border
+    eink_data(0x80);
+}
+
+
+void eink_reset(void) {
+    gpio_set_level((gpio_num_t)EINK_RST, 0);
+    vTaskDelay(EINK_RESET_DELAY / portTICK_RATE_MS);
+    gpio_set_level((gpio_num_t)EINK_RST, 1);
+    vTaskDelay(EINK_RESET_DELAY / portTICK_RATE_MS);
+}
+
+void eink_start(void) {
+    //TODO: power on eink display
+    eink_init_io();
+    eink_reset();
+    eink_waitBusy("epd_reset");
+}
+
+void eink_init(int fullUpdate) {
+    if(!fullUpdate) {
+        eink_init_partial();
+        return;
+    }
+    //TODO: initialize display
+    //send power on sequence to diplay
+    eink_cmd(0x12); // soft reset
+    eink_waitBusy("epd_wakeup_power:ON");
+#if 1
+    eink_cmd(0x01); // Driver output control
+    eink_data(0xC7);
+    eink_data(0x00);
+    eink_data(0x00);
+
+#if 0
+    eink_cmd(0x11); // increment x first, then increment y
+    eink_data(0x03);
+
+    //set ram area
+    eink_cmd(0x44);
+    eink_data(0);
+    eink_data(24); //200px = 25 * 8. ie 0-24
+    eink_cmd(0x45);
+    eink_data(0);
+    eink_data(0);
+    eink_data(199); //200 lines. ie 0-199
+    eink_data(0);
+#endif
+
+    eink_cmd(0x1A); // set temperatur to 25 degrees to select apropriate LUT
+    eink_data(0x19);
+    eink_data(0x00);
+
+    eink_cmd(0x22);
+    eink_data(0x91);
+    eink_cmd(0x20);
+    eink_waitBusy("PowerOn");
+#endif
+    
+}
+
+void eink_stop(void) {
+    eink_waitBusy("Power off");
+    //goto deep sleep
+    eink_cmd(0x10);
+    eink_data(0x01);
+    eink_shutdown_io();
+    //TODO: gpio to minimal
+}
+
+static void eink_buffer_number(int num, uint8_t bufferId, int fullUpdate) {
+    //set ram pointer
+    uint8_t ones = num%10;
+    uint8_t tens = (num/10)%10;
+
+    if(fullUpdate) {
+        //set ram area
+        eink_cmd(0x11);
+        eink_data(0x03);
+        eink_cmd(0x44);
+        eink_data(0);
+        eink_data(24); //200px = 25 * 8. ie 0-24
+        eink_cmd(0x45);
+        eink_data(0);
+        eink_data(0);
+        eink_data(199); //200 lines. ie 0-199
+        eink_data(0);
+        //set ram pointer
+        eink_cmd(0x4E);
+        eink_data(0);
+        eink_cmd(0x4F);
+        eink_data(0);
+        eink_data(0);
+        eink_waitBusy("set ram");
+        //write screen data
+        eink_cmd(bufferId);
+        for(int y=0; y<10; y++) {
+            for(int x=0; x<25; x++) eink_data(0xFF); //64 pixels white
+        }
+    } else {
+        //init partial update
+        eink_cmd(0x11);
+        eink_data(0x03);
+        //set ram area
+        eink_cmd(0x44);
+        eink_data(0);
+        eink_data(24); //200px = 25 * 8. ie 0-24
+        eink_cmd(0x45);
+        eink_data(10); //start at y=20
+        eink_data(0);
+        eink_data(99); //end at y=99 (i.e. 80 lines)
+        eink_data(0);
+        //set pointer and size
+        eink_cmd(0x4E);
+        eink_data(0);
+        eink_cmd(0x4F);
+        eink_data(10); //start at y=20
+        eink_data(0);
+        eink_waitBusy("set ram");
+        //write screen data
+        eink_cmd(bufferId);
+    }
+    for(int y=0; y<80; y++) {
+        eink_data(0xFF);
+        eink_data(0xFF);
+        eink_data(0xFF);
+        eink_data(0xFF);
+        eink_data(0xFF);
+        for(int x=0; x<19; x++) eink_data(digits[ones][y*19+x]);
+        eink_data(0xFF);
+    }
+    if(fullUpdate) {
+        for(int y=0; y<20; y++) {
+            for(int x=0; x<25; x++) eink_data(0xFF); //64 pixels white
+        }
+        for(int y=0; y<80; y++) {
+            eink_data(0xFF);
+            eink_data(0xFF);
+            eink_data(0xFF);
+            eink_data(0xFF);
+            eink_data(0xFF);
+            for(int x=0; x<19; x++) eink_data(digits[tens][y*19+x]);
+            eink_data(0xFF);
+        }
+        for(int y=0; y<10; y++) {
+            for(int x=0; x<25; x++) eink_data(0xFF); //64 pixels white
+        }
+    }
+}
+
+void eink_display_number(uint8_t num, int fullUpdate) {
+    eink_buffer_number(num, 0x24, fullUpdate);
+    if(fullUpdate) {
+        eink_buffer_number(num, 0x26, fullUpdate);
+    }
+}
+
+void static eink_draw_bitmap(int bitmapId, int top, int left, uint8_t bufferId) {
+    //top in lines, left in multiples of 8 pixels rounded down
+    //set ram area
+    eink_cmd(0x11);
+    eink_data(0x03);
+    eink_cmd(0x44);
+    eink_data(0);
+    eink_data(24); //200px = 25 * 8. ie 0-24
+    eink_cmd(0x45);
+    eink_data(0);
+    eink_data(0);
+    eink_data(199); //200 lines. ie 0-199
+    eink_data(0);
+    //set ram pointer
+    eink_cmd(0x4E);
+    eink_data(0);
+    eink_cmd(0x4F);
+    eink_data(0);
+    eink_data(0);
+    eink_waitBusy("set ram");
+    //write screen data
+    eink_cmd(bufferId);
+    left>>=3;
+    int width=bitmaps[bitmapId][0];  //width in bytes
+    int height=bitmaps[bitmapId][1]; //height in lines
+    int line=0;
+    //clear top of display
+    while(line<top) { 
+        for(int x=0; x<25; x++) eink_data(0xFF);
+        line++;
+    }
+    top+=height;
+    width+=left; //end position of bitmap on line in bytes
+    int p=2;
+    while(line<top) {
+       int x=0;
+       while(x<left) { eink_data(0xFF); x++; } //clear left of display
+       while(x<width) { eink_data(bitmaps[BITMAP_SETUP][p]); x++; p++; }
+       while(x<25) { eink_data(0xFF); x++; } //clear right of display
+       line++;
+    }
+    //clear bottom of display
+    while(line<200) { 
+        for(int x=0; x<25; x++) eink_data(0xFF);
+        line++;
+    }
+}
+
+//draw bitmap on the specified location and allow partial updates
+//by writing both to the Black/White buffer and the Red buffer
+void eink_display_bitmap(int bitmapId, int top, int left) {
+    eink_draw_bitmap(bitmapId, top, left, 0x24);
+    eink_draw_bitmap(bitmapId, top, left, 0x26);
+}
+
+void eink_update(int fullUpdate) {
+    eink_cmd(0x22);
+    eink_data(fullUpdate?0xC7:0xCF);
+    eink_cmd(0x20);
+}
+

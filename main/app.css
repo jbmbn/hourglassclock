@@ -1,0 +1,193 @@
+body {
+    background-color: #eee;
+    border: 0;
+    margin: 0;
+    font: 1.1em tahoma, arial, sans-serif;
+}
+a {
+    color: darkblue;
+    transition: color .2s ease-out;
+    text-decoration: none
+}
+a:hover {
+    color: red;
+}
+input {
+    display: none;
+    font: 1.1em tahoma, arial, sans-serif;
+}
+input:focus,
+select:focus,
+textarea:focus,
+button:focus {
+    outline: none;
+}
+input[type="button"] {
+    width: 100px;
+    padding: 5px;
+    text-align: center;
+    display: block;
+}
+p {
+    padding: 10px;
+}
+#credits {
+    display: none;
+}
+#app {} #app-wrap {} #disconnect {
+    width: 150px;
+}
+.diag-box {
+    position: absolute;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    right: 0;
+    height: 100%;
+    width: 100%;
+    display: none;
+}
+.diag-box-win {
+    position: absolute;
+    left: 10%;
+    width: 80%;
+    text-align: center;
+    border: 2px outset #888;
+    background-color: #fff;
+    border-radius: 10px;
+    top: 20%;
+}
+.blur {
+    -webkit-filter: blur(2px);
+    -moz-filter: blur(2px);
+    -ms-filter: blur(2px);
+    -o-filter: blur(2px);
+    filter: blur(2px);
+}
+.nfo {
+    margin-left: 20px;
+    padding: 10px 0px 10px 10px;
+}
+.ape {
+    margin-left: 20px;
+    padding: 10px 0px 10px 10px;
+}
+.ape:hover {
+    cursor: pointer;
+}
+.brdb {
+    border-bottom: 1px solid #888;
+}
+header {
+    background-color: #fff;
+    border-bottom: 1px solid #888;
+}
+section {
+    background-color: #fff;
+    border-bottom: 1px solid #888;
+    border-top: 1px solid #888;
+}
+h1 {
+    display: block;
+    text-align: center;
+    margin: 0;
+    padding: 15px;
+    font-size: 1.4em
+}
+h2 {
+    margin: 0;
+    margin-top: 20px;
+    padding: 10px;
+    text-transform: uppercase;
+    color: #888;
+    font-size: 1.0em
+}
+h3 {
+    margin: 0;
+    text-align: center;
+    padding: 20px 0px 20px 0px;
+}
+.gr {
+    color: green;
+}
+.rd {
+    color: red;
+}
+.buttons {
+    padding: 15px;
+}
+.ctr {
+    margin: 0 auto;
+}
+.tctr {
+    text-align: center;
+}
+.fr {
+    float: right;
+    margin-right: 20px;
+}
+
+#newfile {
+    border: none;
+    width: 80%;
+    margin-left: 35px;
+    padding: 10px 0px 10px 10px;
+    display: block
+}
+#update {
+    display: none;
+}
+#update-error {
+    display: none;
+}
+#update-succes {
+    display: none;
+}
+#updating {
+    display: none;
+}
+
+/* SpinKit is licensed under the MIT License. Copyright (c) 2015 Tobias Ahlin */
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    position: relative;
+    margin: 100px auto;
+}
+.double-bounce1,
+.double-bounce2 {
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    background-color: #333;
+    opacity: 0.6;
+    position: absolute;
+    top: 0;
+    left: 0;
+    -webkit-animation: sk-bounce 2.0s infinite ease-in-out;
+    animation: sk-bounce 2.0s infinite ease-in-out;
+}
+.double-bounce2 {
+    -webkit-animation-delay: -1.0s;
+    animation-delay: -1.0s;
+}
+@-webkit-keyframes sk-bounce {
+    0%, 100% {
+        -webkit-transform: scale(0.0)
+    }
+    50% {
+        -webkit-transform: scale(1.0)
+    }
+}
+@keyframes sk-bounce {
+    0%, 100% {
+        transform: scale(0.0);
+        -webkit-transform: scale(0.0);
+    }
+    50% {
+        transform: scale(1.0);
+        -webkit-transform: scale(1.0);
+    }
+}
+/* end of SpinKit */
